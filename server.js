@@ -1,53 +1,80 @@
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'submissions.json');
+const GITHUB_TOKEN = process.env.GH_TOKEN || '';
+const OWNER = 'Dongge021';
+const REPO = 'wanma-2026';
+const DATA_PATH = 'data/submissions.json';
+const API_BASE = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${DATA_PATH}`;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
 
-// 初始化数据文件
-if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '[]');
-
-function readData() {
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+async function readData() {
+  try {
+    const res = await fetch(API_BASE, {
+      headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3+json' }
+    });
+    if (!res.ok) return [];
+    const body = await res.json();
+    if (!body.content) return [];
+    const decoded = Buffer.from(body.content, 'base64').toString('utf-8');
+    return JSON.parse(decoded);
+  } catch { return []; }
 }
-function writeData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+
+async function writeData(data) {
+  // First get the current file's SHA (needed to update)
+  let sha = '';
+  try {
+    const res = await fetch(API_BASE, {
+      headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3+json' }
+    });
+    if (res.ok) {
+      const body = await res.json();
+      sha = body.sha || '';
+    }
+  } catch {}
+
+  const content = Buffer.from(JSON.stringify(data, null, 2)).toString('base64');
+  const body = { message: 'update submissions', content };
+  if (sha) body.sha = sha;
+
+  const res = await fetch(API_BASE, {
+    method: 'PUT',
+    headers: {
+      Authorization: `token ${GITHUB_TOKEN}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/vnd.github.v3+json'
+    },
+    body: JSON.stringify(body)
+  });
+  return res.ok;
 }
 
-// DSR提交数据
-app.post('/api/submit', (req, res) => {
+app.post('/api/submit', async (req, res) => {
   const { dsrName, distributor, data: shopData, timestamp } = req.body;
   if (!dsrName || !distributor || !shopData) {
     return res.json({ ok: false, msg: '参数不完整' });
   }
-  const all = readData();
-  // 如果该DSR+经销商已提交过，覆盖
+  const all = await readData();
   const idx = all.findIndex(s => s.dsrName === dsrName && s.distributor === distributor);
   const entry = { dsrName, distributor, data: shopData, timestamp: timestamp || new Date().toISOString() };
   if (idx >= 0) all[idx] = entry;
   else all.push(entry);
-  writeData(all);
-  res.json({ ok: true });
+  const ok = await writeData(all);
+  res.json({ ok, msg: ok ? '提交成功' : '保存失败' });
 });
 
-// 管理员查看所有提交
-app.get('/api/submissions', (req, res) => {
-  const all = readData();
+app.get('/api/submissions', async (req, res) => {
+  const all = await readData();
   res.json(all);
 });
 
-// 管理员导出CSV
-app.get('/api/export', (req, res) => {
-  const all = readData();
+app.get('/api/export', async (req, res) => {
+  const all = await readData();
   const statusMap = {1:'已合作+已建档',2:'已合作+名不同',3:'已合作+未建档',4:'未合作+已建档',5:'未合作+未建档',6:'该店不存在'};
   let csv = '\uFEFF经销商,DSR,门店名称,区域,地址,电话,状态,系统内名称,S编码\n';
   all.forEach(s => {
@@ -60,16 +87,14 @@ app.get('/api/export', (req, res) => {
   res.send(csv);
 });
 
-// 管理页面
-app.get('/admin', (req, res) => {
-  const all = readData();
+app.get('/admin', async (req, res) => {
+  const all = await readData();
   const statusMap = {1:'已合作+已建档',2:'已合作+名不同',3:'已合作+未建档',4:'未合作+已建档',5:'未合作+未建档',6:'该店不存在'};
-  let html = `<!DOCTYPE html><html lang=zh-CN><head><meta charset=UTF-8>
-  <title>万马奔腾 - 后台管理</title>
+  let html = `<meta charset=UTF-8><title>万马奔腾后台</title>
   <meta name=viewport content="width=device-width,initial-scale=1">
   <style>body{font-family:-apple-system,Microsoft YaHei,sans-serif;background:#f5f6fa;margin:0;padding:20px}
   h1{font-size:20px;color:#1a1a2e}
-  table{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+  table{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden}
   th{background:#1a1a2e;color:#fff;padding:10px 12px;font-size:13px;text-align:left}
   td{padding:8px 12px;font-size:12px;border-bottom:1px solid #eee}
   tr:hover td{background:#f0f0f0}
@@ -79,49 +104,22 @@ app.get('/admin', (req, res) => {
   .card .label{font-size:12px;color:#888;margin-top:4px}
   .btn{padding:8px 20px;background:#e94560;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;text-decoration:none;display:inline-block;margin:10px 0}
   .btn:hover{background:#d63850}
-  </style></head><body>
-  <h1>🐎 万马奔腾 · 后台管理</h1>
-  <a class=btn href=/api/export>📥 导出全部CSV</a>
+  </style>
+  <h1>万马奔腾后台</h1>
+  <a class=btn href=/api/export>导出全部CSV</a>
   <div class=summary>`;
   const totals = {};
   all.forEach(s => totals[s.distributor] = (totals[s.distributor]||0) + (s.data||[]).length);
   Object.entries(totals).forEach(([k,v]) => {
-    html += `<div class=card><div class=num>${v}</div><div class=label>${k} 已确认</div></div>`;
+    html += `<div class=card><div class=num>${v}</div><div class=label>${k}</div></div>`;
   });
   html += `<div class=card><div class=num>${all.length}</div><div class=label>提交人数</div></div></div>`;
-
-  html += `<table><tr><th>DSR</th><th>经销商</th><th>提交时间</th><th>确认数</th><th>操作</th></tr>`;
-  all.forEach((s, i) => {
-    const done = (s.data||[]).filter(d => d.status && d.status !== 0).length;
-    html += `<tr><td>${s.dsrName}</td><td>${s.distributor}</td><td>${new Date(s.timestamp).toLocaleString()}</td>
-    <td>${done}/${s.data.length}</td>
-    <td><a href=/api/detail/${i}>查看</a></td></tr>`;
+  html += `<table><tr><th>DSR</th><th>经销商</th><th>时间</th><th>确认数</th></tr>`;
+  all.forEach(s => {
+    const done = (s.data||[]).filter(d => d.status).length;
+    html += `<tr><td>${s.dsrName}</td><td>${s.distributor}</td><td>${new Date(s.timestamp).toLocaleString()}</td><td>${done}/${s.data.length}</td></tr>`;
   });
-  html += `</table></body></html>`;
-  res.send(html);
-});
-
-// 查看单个DSR详情
-app.get('/api/detail/:idx', (req, res) => {
-  const all = readData();
-  const s = all[parseInt(req.params.idx)];
-  if (!s) return res.status(404).send('not found');
-  const statusMap = {1:'已合作+已建档',2:'已合作+名不同',3:'已合作+未建档',4:'未合作+已建档',5:'未合作+未建档',6:'该店不存在'};
-  let html = `<!DOCTYPE html><html lang=zh-CN><head><meta charset=UTF-8>
-  <title>${s.dsrName} - ${s.distributor}</title>
-  <style>body{font-family:-apple-system,Microsoft YaHei,sans-serif;background:#f5f6fa;padding:20px}
-  table{border-collapse:collapse;width:100%;background:#fff;border-radius:8px}
-  th{background:#1a1a2e;color:#fff;padding:8px 10px;font-size:12px;text-align:left}
-  td{padding:6px 10px;font-size:12px;border-bottom:1px solid #eee}
-  h2{font-size:18px;color:#1a1a2e}
-  </style></head><body>
-  <h2>${s.dsrName} - ${s.distributor}</h2>
-  <p>提交时间: ${new Date(s.timestamp).toLocaleString()}</p>
-  <table><tr><th>门店</th><th>区域</th><th>状态</th><th>系统内名称</th><th>S编码</th></tr>`;
-  (s.data||[]).forEach(d => {
-    html += `<tr><td>${d.name}</td><td>${d.area}</td><td>${statusMap[d.status]||'未确认'}</td><td>${d.sysName||''}</td><td>${d.sCode||''}</td></tr>`;
-  });
-  html += `</table></body></html>`;
+  html += `</table>`;
   res.send(html);
 });
 
