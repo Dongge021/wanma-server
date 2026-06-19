@@ -3,7 +3,13 @@ import cors from 'cors';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const GITHUB_TOKEN = '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';
+
+// GITHUB_TOKEN must be set in Render environment variables!
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+if (!GITHUB_TOKEN) {
+  console.error('ERROR: GITHUB_TOKEN not set!');
+}
+
 const OWNER = 'Dongge021';
 const REPO = 'wanma-2026';
 const DATA_PATH = 'data/submissions.json';
@@ -36,7 +42,8 @@ async function writeData(data) {
   const body = { message: 'update submissions', content };
   if (sha) body.sha = sha;
   const res = await fetch(API_BASE, {
-    method: 'PUT', headers: { Authorization: `token ${GITHUB_TOKEN}`, 'Content-Type': 'application/json', Accept: 'application/vnd.github.v3+json' },
+    method: 'PUT',
+    headers: { Authorization: `token ${GITHUB_TOKEN}`, 'Content-Type': 'application/json', Accept: 'application/vnd.github.v3+json' },
     body: JSON.stringify(body)
   });
   return res.ok;
